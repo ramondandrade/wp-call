@@ -42,7 +42,31 @@ try {
 }
 
 // STUN server allows each peer to discover its public IP for NAT traversal
-const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+const ICE_SERVERS = [
+      {
+        urls: "stun:stun.relay.metered.ca:80",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80",
+        username: "af4aeaf82f746dda0b5e8201",
+        credential: "hhaIv0AT6jAr5GRL",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80?transport=tcp",
+        username: "af4aeaf82f746dda0b5e8201",
+        credential: "hhaIv0AT6jAr5GRL",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:443",
+        username: "af4aeaf82f746dda0b5e8201",
+        credential: "hhaIv0AT6jAr5GRL",
+      },
+      {
+        urls: "turns:global.relay.metered.ca:443?transport=tcp",
+        username: "af4aeaf82f746dda0b5e8201",
+        credential: "hhaIv0AT6jAr5GRL",
+      },
+  ];
 
 const WHATSAPP_API_URL = `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/calls`;
 const ACCESS_TOKEN = `Bearer ${process.env.ACCESS_TOKEN}`;
