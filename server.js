@@ -16,6 +16,7 @@ const ICE_SERVERS = [{ urls: "stun:stun.relay.metered.ca:80" }];
 
 const WHATSAPP_API_URL = `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/calls`;
 const ACCESS_TOKEN = `Bearer ${process.env.ACCESS_TOKEN}`;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "sandeep_bora";
 
 const app = express();
 const server = http.createServer(app);
@@ -33,6 +34,38 @@ let browserOfferSdp = null;
 let whatsappOfferSdp = null;
 let browserSocket = null;
 let currentCallId = null;
+
+/**
+ * Webhook verification endpoint for WhatsApp Business API
+ * This endpoint is called by WhatsApp to verify your webhook URL
+ */
+app.get("/webhook", (req, res) => {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    console.log("Webhook verification request received:");
+    console.log("Mode:", mode);
+    console.log("Token:", token);
+    console.log("Challenge:", challenge);
+
+    // Check if a token and mode were sent
+    if (mode && token) {
+        // Check the mode and token sent are correct
+        if (mode === "subscribe" && token === VERIFY_TOKEN) {
+            // Respond with 200 OK and challenge token from the request
+            console.log("Webhook verified successfully!");
+            res.status(200).send(challenge);
+        } else {
+            // Responds with '403 Forbidden' if verify tokens do not match
+            console.log("Webhook verification failed - invalid token");
+            res.sendStatus(403);
+        }
+    } else {
+        console.log("Webhook verification failed - missing parameters");
+        res.sendStatus(400);
+    }
+});
 
 /**
  * Socket.IO connection from browser client.
@@ -78,8 +111,10 @@ io.on("connection", (socket) => {
 /**
  * Handles incoming WhatsApp webhook call events.
  */
-app.post("/call-events", async (req, res) => {
+app.post("/webhook", async (req, res) => {
     try {
+        console.log("Received webhook POST request:", JSON.stringify(req.body, null, 2));
+        
         const entry = req.body?.entry?.[0];
         const change = entry?.changes?.[0];
         const call = change?.value?.calls?.[0];
@@ -117,7 +152,7 @@ app.post("/call-events", async (req, res) => {
 
         res.sendStatus(200);
     } catch (err) {
-        console.error("Error processing /call-events webhook:", err);
+        console.error("Error processing /webhook POST:", err);
         res.sendStatus(500);
     }
 });
