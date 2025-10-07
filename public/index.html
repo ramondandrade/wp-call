@@ -323,6 +323,17 @@
       document.getElementById("outgoing-call-status").style.color = "#dc3545";
     });
 
+    // Handle server request to start WebRTC for outgoing calls
+    socket.on("start-outgoing-call-webrtc", ({ phoneNumber, callerName }) => {
+      console.log("🚀 Server requesting WebRTC start for outgoing call to:", phoneNumber);
+      document.getElementById("outgoing-call-status").textContent = 
+        `🔄 Setting up call to ${phoneNumber}...`;
+      document.getElementById("outgoing-call-status").style.color = "#ffc107";
+      
+      // Start WebRTC process - this will generate SDP offer and send it to server
+      startWebRTC();
+    });
+
     // Outbound call control event listeners
     document.getElementById("reject-outbound-btn").addEventListener("click", () => {
       console.log("Rejecting outbound call...");

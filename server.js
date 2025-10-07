@@ -89,6 +89,29 @@ let whatsappOfferSdp = null;
 let browserSocket = null;
 let currentCallId = null;
 
+// Outgoing call state management
+let isOutgoingCall = false;
+let outgoingCallState = {
+    phoneNumber: null,
+    callerName: null,
+    callId: null,
+    status: 'idle' // idle, initiating, ringing, connected, ended
+};
+
+/**
+ * Reset outgoing call state to initial values
+ */
+function resetOutgoingCallState() {
+    isOutgoingCall = false;
+    outgoingCallState = {
+        phoneNumber: null,
+        callerName: null,
+        callId: null,
+        status: 'idle'
+    };
+    console.log("Outgoing call state reset");
+}
+
 /**
  * Webhook verification endpoint for WhatsApp Business API
  * This endpoint is called by WhatsApp to verify your webhook URL
@@ -132,7 +155,35 @@ io.on("connection", (socket) => {
         console.log("Received SDP offer from browser.");
         browserOfferSdp = sdp;
         browserSocket = socket;
-        await initiateWebRTCBridge();
+        
+        // Check if this is for an outgoing call
+        if (isOutgoingCall && outgoingCallState.status === 'waiting-for-sdp') {
+            console.log("Processing SDP offer for outgoing call");
+            
+            // Now call the WhatsApp API to initiate the call with the SDP offer
+            const callResult = await initiateWhatsAppCall(outgoingCallState.phoneNumber, sdp);
+            
+            if (callResult.success) {
+                // Store the outgoing call info
+                currentCallId = callResult.callId;
+                outgoingCallState.callId = callResult.callId;
+                outgoingCallState.status = 'ringing';
+                
+                // Notify the browser about the initiated call
+                io.emit("outgoing-call-initiated", { 
+                    callId: callResult.callId, 
+                    phoneNumber: outgoingCallState.phoneNumber, 
+                    callerName: outgoingCallState.callerName 
+                });
+            } else {
+                console.error("Failed to initiate WhatsApp call:", callResult.error);
+                resetOutgoingCallState();
+                io.emit("webrtc-error", { error: callResult.error });
+            }
+        } else {
+            // This is for an incoming call
+            await initiateWebRTCBridge();
+        }
     });
 
     // ICE candidate from browser
@@ -159,6 +210,30 @@ io.on("connection", (socket) => {
     socket.on("terminate-call", async (callId) => {
         const result = await terminateCall(callId);
         console.log("Terminate call response:", result);
+    });
+
+    // Outgoing call management events
+    socket.on("reject-outbound-call", async () => {
+        console.log("Browser rejected outbound call");
+        if (outgoingCallState.callId) {
+            const result = await rejectCall(outgoingCallState.callId);
+            console.log("Reject outbound call response:", result);
+        }
+        resetOutgoingCallState();
+        io.emit("outgoing-call-rejected", { 
+            callId: outgoingCallState.callId, 
+            phoneNumber: outgoingCallState.phoneNumber 
+        });
+    });
+
+    socket.on("terminate-outbound-call", async () => {
+        console.log("Browser terminated outbound call");
+        if (outgoingCallState.callId) {
+            const result = await terminateCall(outgoingCallState.callId);
+            console.log("Terminate outbound call response:", result);
+        }
+        resetOutgoingCallState();
+        io.emit("call-ended");
     });
 });
 
@@ -187,17 +262,54 @@ app.post("/webhook", async (req, res) => {
             const callerName = contact?.profile?.name || "Unknown";
             const callerNumber = contact?.wa_id || "Unknown";
 
-            console.log(`Incoming WhatsApp call from ${callerName} (${callerNumber})`);
-            io.emit("call-is-coming", { callId, callerName, callerNumber });
+            // Check if this is a response to our outgoing call or an incoming call
+            if (isOutgoingCall && outgoingCallState.callId === callId) {
+                console.log(`Outgoing WhatsApp call answered by ${callerNumber}`);
+                outgoingCallState.status = 'connected';
+                io.emit("outgoing-call-connected", { 
+                    callId, 
+                    phoneNumber: callerNumber,
+                    callerName 
+                });
+            } else {
+                console.log(`Incoming WhatsApp call from ${callerName} (${callerNumber})`);
+                io.emit("call-is-coming", { callId, callerName, callerNumber });
+            }
 
             await initiateWebRTCBridge();
 
         } else if (call.event === "terminate") {
             console.log(`WhatsApp call terminated. Call ID: ${callId}`);
+            
+            // Check if this was an outgoing call
+            if (isOutgoingCall && outgoingCallState.callId === callId) {
+                resetOutgoingCallState();
+            }
+            
             io.emit("call-ended");
 
             if (call.duration && call.status) {
                 console.log(`Call duration: ${call.duration}s | Status: ${call.status}`);
+            }
+
+        } else if (call.event === "reject") {
+            console.log(`WhatsApp call rejected. Call ID: ${callId}`);
+            
+            // Check if this was an outgoing call that got rejected
+            if (isOutgoingCall && outgoingCallState.callId === callId) {
+                const phoneNumber = outgoingCallState.phoneNumber;
+                resetOutgoingCallState();
+                io.emit("outgoing-call-rejected", { callId, phoneNumber });
+            }
+
+        } else if (call.event === "timeout") {
+            console.log(`WhatsApp call timed out. Call ID: ${callId}`);
+            
+            // Check if this was an outgoing call that timed out
+            if (isOutgoingCall && outgoingCallState.callId === callId) {
+                const phoneNumber = outgoingCallState.phoneNumber;
+                resetOutgoingCallState();
+                io.emit("outgoing-call-timeout", { callId, phoneNumber });
             }
 
         } else {
@@ -208,6 +320,47 @@ app.post("/webhook", async (req, res) => {
     } catch (err) {
         console.error("Error processing /webhook POST:", err);
         res.sendStatus(500);
+    }
+});
+
+/**
+ * Initiates an outgoing WhatsApp call
+ */
+app.post("/initiate-call", async (req, res) => {
+    try {
+        const { phoneNumber, callerName } = req.body;
+        
+        console.log("Received outgoing call request:", { phoneNumber, callerName });
+        
+        if (!phoneNumber) {
+            return res.status(400).json({ success: false, error: "Phone number is required" });
+        }
+
+        // Set outgoing call state
+        isOutgoingCall = true;
+        outgoingCallState = {
+            phoneNumber: phoneNumber,
+            callerName: callerName || "Outgoing Call",
+            callId: null, // Will be set when we get the response
+            status: 'waiting-for-sdp'
+        };
+
+        // Notify the browser to start generating SDP offer for outgoing call
+        io.emit("start-outgoing-call-webrtc", { 
+            phoneNumber, 
+            callerName: callerName || "Outgoing Call" 
+        });
+
+        res.json({ 
+            success: true, 
+            message: `Initiating call to ${phoneNumber}. Waiting for WebRTC setup...` 
+        });
+    } catch (error) {
+        console.error("Error initiating outgoing call:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Internal server error while initiating call" 
+        });
     }
 });
 
@@ -299,6 +452,70 @@ async function initiateWebRTCBridge() {
     // Reset session state
     browserOfferSdp = null;
     whatsappOfferSdp = null;
+}
+
+/**
+ * Initiates an outgoing call to WhatsApp API with SDP offer
+ */
+async function initiateWhatsAppCall(phoneNumber, sdp) {
+    const body = {
+        messaging_product: "whatsapp",
+        to: phoneNumber,
+        action: "connect",
+        session: { 
+            sdp_type: "offer", 
+            sdp 
+        }
+    };
+
+    try {
+        console.log("Sending outgoing call request to WhatsApp API:", {
+            to: phoneNumber,
+            action: "connect",
+            sdp_length: sdp.length
+        });
+
+        const response = await axios.post(WHATSAPP_API_URL, body, {
+            headers: {
+                Authorization: ACCESS_TOKEN,
+                "Content-Type": "application/json",
+            },
+        });
+
+        console.log("WhatsApp API response:", response.data);
+
+        if (response.data?.success === true) {
+            console.log(`Successfully initiated call to ${phoneNumber}`);
+            
+            // The response might contain a call_id that we should track
+            const callId = response.data.call_id || `outgoing_${Date.now()}`;
+            
+            return {
+                success: true,
+                callId: callId,
+                data: response.data
+            };
+        } else {
+            console.warn("WhatsApp call initiation response was not successful:", response.data);
+            return {
+                success: false,
+                error: "WhatsApp API did not confirm call initiation"
+            };
+        }
+    } catch (error) {
+        console.error("Failed to initiate WhatsApp call:", error.message);
+        
+        let errorMessage = "Failed to connect to WhatsApp API";
+        if (error.response?.data) {
+            console.error("WhatsApp API error response:", error.response.data);
+            errorMessage = error.response.data.error?.message || errorMessage;
+        }
+        
+        return {
+            success: false,
+            error: errorMessage
+        };
+    }
 }
 
 /**
