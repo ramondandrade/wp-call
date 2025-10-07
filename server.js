@@ -4,12 +4,42 @@ const axios = require("axios");
 const path = require("path");
 const http = require("http");
 const socketIO = require("socket.io");
-const {
-    RTCPeerConnection,
-    RTCSessionDescription,
-    RTCIceCandidate,
-    MediaStream,
-} = require("wrtc");
+// Try to load wrtc with fallback handling for deployment environments
+let RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, MediaStream;
+
+try {
+    const wrtc = require("wrtc");
+    RTCPeerConnection = wrtc.RTCPeerConnection;
+    RTCSessionDescription = wrtc.RTCSessionDescription;
+    RTCIceCandidate = wrtc.RTCIceCandidate;
+    MediaStream = wrtc.MediaStream;
+    console.log("WRTC module loaded successfully");
+} catch (error) {
+    console.error("Failed to load wrtc module:", error.message);
+    console.log("Running in compatibility mode - WebRTC features may be limited");
+    
+    // Provide mock implementations for development/testing
+    RTCPeerConnection = class MockRTCPeerConnection {
+        constructor() {
+            console.warn("Using mock RTCPeerConnection - WebRTC not available");
+        }
+    };
+    RTCSessionDescription = class MockRTCSessionDescription {
+        constructor() {
+            console.warn("Using mock RTCSessionDescription - WebRTC not available");
+        }
+    };
+    RTCIceCandidate = class MockRTCIceCandidate {
+        constructor() {
+            console.warn("Using mock RTCIceCandidate - WebRTC not available");
+        }
+    };
+    MediaStream = class MockMediaStream {
+        constructor() {
+            console.warn("Using mock MediaStream - WebRTC not available");
+        }
+    };
+}
 
 // STUN server allows each peer to discover its public IP for NAT traversal
 const ICE_SERVERS = [{ urls: "stun:stun.relay.metered.ca:80" }];

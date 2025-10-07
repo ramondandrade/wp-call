@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: wp-call
+    env: node
+    plan: free
+    buildCommand: npm install --production=false && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 18.19.0
+      - key: NPM_CONFIG_PRODUCTION
+        value: false
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=1024"
+    healthCheckPath: /

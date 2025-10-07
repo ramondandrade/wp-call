@@ -4,6 +4,9 @@
   "description": "Real-time WhatsApp voice calling integration using the WhatsApp Business API and WebRTC. Enables two-way audio between browser clients and WhatsApp users.",
   "main": "server.js",
   "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "echo 'No build process needed'",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -20,7 +23,15 @@
     "axios": "^1.11.0",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
+    "@mapbox/node-pre-gyp": "^1.0.11",
     "socket.io": "^4.8.1",
+    "wrtc": "^0.4.7"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "optionalDependencies": {
     "wrtc": "^0.4.7"
   }
 }
