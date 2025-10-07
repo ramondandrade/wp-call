@@ -189,6 +189,7 @@ io.on("connection", (socket) => {
             // Now call the WhatsApp API to initiate the call with the SDP offer
             const callResult = await initiateWhatsAppCall(outgoingCallState.phoneNumber, sdp);
             
+            /*
             if (callResult.success) {
                 // Store the outgoing call info
                 currentCallId = callResult.callId;
@@ -205,7 +206,7 @@ io.on("connection", (socket) => {
                 console.error("Failed to initiate WhatsApp call:", callResult.error);
                 resetOutgoingCallState();
                 io.emit("webrtc-error", { error: callResult.error });
-            }
+            }*/
         } else {
             // This is for an incoming call
             await initiateWebRTCBridge();
@@ -505,10 +506,7 @@ async function initiateWhatsAppCall(phoneNumber, sdp) {
         messaging_product: "whatsapp",
         to: phoneNumber,
         action: "connect",
-        session: { 
-            sdp_type: "offer", 
-            sdp 
-        }
+        //session: {  sdp_type: "offer", sdp  }
     };
 
     try {
