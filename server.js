@@ -68,7 +68,7 @@ const ICE_SERVERS = [
       },
   ];
 
-const WHATSAPP_API_URL = `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/calls`;
+const WHATSAPP_API_URL = `https://graph.facebook.com/v23.0/${process.env.PHONE_NUMBER_ID}/calls`;
 const ACCESS_TOKEN = `Bearer ${process.env.ACCESS_TOKEN}`;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "sandeep_bora";
 
@@ -88,6 +88,9 @@ let browserOfferSdp = null;
 let whatsappOfferSdp = null;
 let browserSocket = null;
 let currentCallId = null;
+
+// Queue for ICE candidates received before peer connection is ready
+let pendingIceCandidates = [];
 
 // Outgoing call state management
 let isOutgoingCall = false;
@@ -110,6 +113,29 @@ function resetOutgoingCallState() {
         status: 'idle'
     };
     console.log("Outgoing call state reset");
+}
+
+/**
+ * Process any queued ICE candidates once the browser peer connection is ready
+ */
+async function processPendingIceCandidates() {
+    if (!browserPc || pendingIceCandidates.length === 0) {
+        return;
+    }
+
+    console.log(`Processing ${pendingIceCandidates.length} queued ICE candidates`);
+    
+    for (const candidate of pendingIceCandidates) {
+        try {
+            await browserPc.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log("Successfully added queued ICE candidate");
+        } catch (err) {
+            console.error("Failed to add queued ICE candidate:", err);
+        }
+    }
+    
+    // Clear the queue
+    pendingIceCandidates = [];
 }
 
 /**
@@ -189,14 +215,27 @@ io.on("connection", (socket) => {
     // ICE candidate from browser
     socket.on("browser-candidate", async (candidate) => {
         if (!browserPc) {
-            console.warn("Cannot add ICE candidate: browser peer connection not initialized.");
+            console.log("Queueing ICE candidate - browser peer connection not ready yet");
+            pendingIceCandidates.push(candidate);
+            return;
+        }
+
+        // Check if the peer connection is in a valid state
+        if (browserPc.signalingState === 'closed') {
+            console.warn("Cannot add ICE candidate: browser peer connection is closed.");
             return;
         }
 
         try {
             await browserPc.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log("Successfully added ICE candidate from browser");
         } catch (err) {
             console.error("Failed to add ICE candidate from browser:", err);
+            console.error("Peer connection state:", {
+                signalingState: browserPc?.signalingState,
+                connectionState: browserPc?.connectionState,
+                iceConnectionState: browserPc?.iceConnectionState
+            });
         }
     });
 
@@ -390,6 +429,9 @@ async function initiateWebRTCBridge() {
         sdp: browserOfferSdp
     }));
     console.log("Browser offer SDP set as remote description.");
+    
+    // Process any queued ICE candidates now that the peer connection is ready
+    await processPendingIceCandidates();
 
     // --- Setup WhatsApp peer connection ---
     whatsappPc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -452,6 +494,7 @@ async function initiateWebRTCBridge() {
     // Reset session state
     browserOfferSdp = null;
     whatsappOfferSdp = null;
+    pendingIceCandidates = [];
 }
 
 /**

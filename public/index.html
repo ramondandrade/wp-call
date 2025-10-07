@@ -494,11 +494,27 @@
 
     socket.on("browser-candidate", async (candidate) => {
       console.log("🧊 Received ICE candidate from server");
+      
+      if (!pc) {
+        console.warn("❌ Cannot add ICE candidate: peer connection not initialized");
+        return;
+      }
+      
+      if (pc.signalingState === 'closed') {
+        console.warn("❌ Cannot add ICE candidate: peer connection is closed");
+        return;
+      }
+      
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
         console.log("✅ ICE candidate added successfully");
       } catch (error) {
         console.error("❌ Error adding ICE candidate:", error);
+        console.error("Peer connection state:", {
+          signalingState: pc?.signalingState,
+          connectionState: pc?.connectionState,
+          iceConnectionState: pc?.iceConnectionState
+        });
       }
     });
 
@@ -805,9 +821,19 @@
       console.log("=== STARTING BROWSER WEBRTC ===");
       console.log("Function called from:", new Error().stack);
       
+      // Clean up any existing peer connection
+      if (pc) {
+        console.log("🔄 Cleaning up existing peer connection");
+        pc.close();
+        pc = null;
+      }
+      
       pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.relay.metered.ca:80" }],
       });
+      
+      console.log("✅ New peer connection created");
+      console.log("Initial signaling state:", pc.signalingState);
 
       // Add audio transceiver for bidirectional audio BEFORE getting user media
       pc.addTransceiver("audio", { direction: "sendrecv" });
