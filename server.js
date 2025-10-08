@@ -316,9 +316,21 @@ app.post("/webhook", async (req, res) => {
                 // For outgoing calls, WhatsApp sends back an SDP answer, not an offer
                 const whatsappAnswerSdp = call?.session?.sdp;
                 if (whatsappAnswerSdp) {
-                    await initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp);
+                    try {
+                        await initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp);
+                    } catch (error) {
+                        console.error("❌ Error in outgoing call WebRTC bridge:", error.message);
+                        io.emit("webrtc-error", { 
+                            error: `WebRTC Bridge Error: ${error.message}` 
+                        });
+                        resetOutgoingCallState();
+                    }
                 } else {
                     console.error("No SDP answer received from WhatsApp for outgoing call");
+                    io.emit("webrtc-error", { 
+                        error: "No SDP answer received from WhatsApp" 
+                    });
+                    resetOutgoingCallState();
                 }
                 
                 outgoingCallState.status = 'connected';
@@ -331,7 +343,15 @@ app.post("/webhook", async (req, res) => {
                 console.log(`Incoming WhatsApp call from ${callerName} (${callerNumber})`);
                 whatsappOfferSdp = call?.session?.sdp;
                 io.emit("call-is-coming", { callId, callerName, callerNumber });
-                await initiateWebRTCBridge();
+                
+                try {
+                    await initiateWebRTCBridge();
+                } catch (error) {
+                    console.error("❌ Error in incoming call WebRTC bridge:", error.message);
+                    io.emit("webrtc-error", { 
+                        error: `WebRTC Bridge Error: ${error.message}` 
+                    });
+                }
             }
 
         } else if (call.event === "terminate") {
@@ -545,11 +565,26 @@ async function initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp) {
     };
 
     // For outgoing calls, browser SDP is the offer
-    await browserPc.setRemoteDescription(new RTCSessionDescription({
-        type: "offer",
-        sdp: browserOfferSdp
-    }));
-    console.log("Browser offer SDP set as remote description for outgoing call.");
+    try {
+        // Validate browser SDP before setting
+        if (!browserOfferSdp || typeof browserOfferSdp !== 'string') {
+            throw new Error("Invalid browser SDP offer - SDP is empty or not a string");
+        }
+        
+        if (!browserOfferSdp.includes('v=0')) {
+            throw new Error("Invalid browser SDP offer - Missing version line");
+        }
+        
+        await browserPc.setRemoteDescription(new RTCSessionDescription({
+            type: "offer",
+            sdp: browserOfferSdp
+        }));
+        console.log("Browser offer SDP set as remote description for outgoing call.");
+    } catch (error) {
+        console.error("❌ Failed to set browser SDP offer:", error.message);
+        console.error("Browser SDP preview:", browserOfferSdp?.substring(0, 200));
+        throw error;
+    }
     
     // Process any queued ICE candidates
     await processPendingIceCandidates();
@@ -579,11 +614,26 @@ async function initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp) {
     console.log("Browser offer set as local description for WhatsApp peer connection");
 
     // Set WhatsApp answer as remote description
-    await whatsappPc.setRemoteDescription(new RTCSessionDescription({
-        type: "answer",
-        sdp: whatsappAnswerSdp
-    }));
-    console.log("WhatsApp answer SDP set as remote description.");
+    try {
+        // Validate WhatsApp SDP before setting
+        if (!whatsappAnswerSdp || typeof whatsappAnswerSdp !== 'string') {
+            throw new Error("Invalid WhatsApp SDP answer - SDP is empty or not a string");
+        }
+        
+        if (!whatsappAnswerSdp.includes('v=0')) {
+            throw new Error("Invalid WhatsApp SDP answer - Missing version line");
+        }
+        
+        await whatsappPc.setRemoteDescription(new RTCSessionDescription({
+            type: "answer",
+            sdp: whatsappAnswerSdp
+        }));
+        console.log("WhatsApp answer SDP set as remote description.");
+    } catch (error) {
+        console.error("❌ Failed to set WhatsApp SDP answer:", error.message);
+        console.error("WhatsApp SDP preview:", whatsappAnswerSdp?.substring(0, 200));
+        throw error;
+    }
 
     // Forward browser mic to WhatsApp
     browserStream?.getAudioTracks().forEach((track) => {
@@ -613,18 +663,38 @@ async function initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp) {
  * Initiates an outgoing call to WhatsApp API with SDP offer
  */
 async function initiateWhatsAppCall(phoneNumber, sdp) {
+    // Validate inputs
+    if (!phoneNumber || !sdp) {
+        return {
+            success: false,
+            error: `Missing required parameters: ${!phoneNumber ? 'phoneNumber' : ''} ${!sdp ? 'sdp' : ''}`.trim()
+        };
+    }
+
+    // Validate SDP format
+    if (typeof sdp !== 'string' || sdp.length < 50 || !sdp.includes('v=0')) {
+        return {
+            success: false,
+            error: "Invalid SDP format - SDP must be a valid session description"
+        };
+    }
+
     const body = {
         messaging_product: "whatsapp",
         to: phoneNumber,
         action: "connect",
-        //session: {  sdp_type: "offer", sdp  }
+        session: { 
+            sdp_type: "offer", 
+            sdp 
+        }
     };
 
     try {
         console.log("Sending outgoing call request to WhatsApp API:", {
             to: phoneNumber,
             action: "connect",
-            sdp_length: sdp.length
+            sdp_length: sdp.length,
+            sdp_preview: sdp.substring(0, 100) + "..."
         });
 
         const response = await axios.post(WHATSAPP_API_URL, body, {
