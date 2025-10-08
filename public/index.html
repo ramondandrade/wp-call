@@ -201,6 +201,31 @@
     let activeCallerName = "";
     let incomingCallId = "";
     const callStatusEl = document.getElementById("call-status");
+    const ICE_SERVERS = [
+      {
+        urls: "stun:stun.relay.metered.ca:80",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80",
+        username: "af4aeaf82f746dda0b5e8201",
+        credential: "hhaIv0AT6jAr5GRL",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80?transport=tcp",
+        username: "af4aeaf82f746dda0b5e8201",
+        credential: "hhaIv0AT6jAr5GRL",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:443",
+        username: "af4aeaf82f746dda0b5e8201",
+        credential: "hhaIv0AT6jAr5GRL",
+      },
+      {
+        urls: "turns:global.relay.metered.ca:443?transport=tcp",
+        username: "af4aeaf82f746dda0b5e8201",
+        credential: "hhaIv0AT6jAr5GRL",
+      },
+  ];
 
     // Debug socket connection
     socket.on("connect", () => {
@@ -557,7 +582,7 @@
         
         // Create a new peer connection
         pc = new RTCPeerConnection({
-          iceServers: [{ urls: "stun:stun.relay.metered.ca:80" }],
+          iceServers: ICE_SERVERS,
         });
         
         // Re-setup event handlers
