@@ -68,7 +68,7 @@ const ICE_SERVERS = [
       },
   ];
 
-const WHATSAPP_API_URL = `https://graph.facebook.com/v23.0/${process.env.PHONE_NUMBER_ID}/calls`;
+const WHATSAPP_API_URL = `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/calls`;
 const ACCESS_TOKEN = `Bearer ${process.env.ACCESS_TOKEN}`;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "sandeep_bora";
 
@@ -88,78 +88,6 @@ let browserOfferSdp = null;
 let whatsappOfferSdp = null;
 let browserSocket = null;
 let currentCallId = null;
-
-// Queue for ICE candidates received before peer connection is ready
-let pendingIceCandidates = [];
-
-// Outgoing call state management
-let isOutgoingCall = false;
-let outgoingCallState = {
-    phoneNumber: null,
-    callerName: null,
-    callId: null,
-    status: 'idle' // idle, initiating, ringing, connected, ended
-};
-
-/**
- * Reset outgoing call state to initial values
- */
-function resetOutgoingCallState() {
-    isOutgoingCall = false;
-    outgoingCallState = {
-        phoneNumber: null,
-        callerName: null,
-        callId: null,
-        status: 'idle'
-    };
-    console.log("Outgoing call state reset");
-}
-
-/**
- * Fix SDP setup attributes to prevent DTLS negotiation errors
- */
-function fixSdpSetupAttributes(sdp, isOffer = false) {
-    if (!sdp || typeof sdp !== 'string') {
-        return sdp;
-    }
-
-    // For offers, use "actpass" (active or passive)
-    // For answers, use "active" 
-    const setupValue = isOffer ? "actpass" : "active";
-    
-    // Replace any existing setup attribute
-    let fixedSdp = sdp.replace(/a=setup:(active|passive|actpass|holdconn)/g, `a=setup:${setupValue}`);
-    
-    // If no setup attribute exists, add one after the connection line
-    if (!fixedSdp.includes('a=setup:')) {
-        fixedSdp = fixedSdp.replace(/(a=mid:\d+)/g, `$1\r\na=setup:${setupValue}`);
-    }
-    
-    return fixedSdp;
-}
-
-/**
- * Process any queued ICE candidates once the browser peer connection is ready
- */
-async function processPendingIceCandidates() {
-    if (!browserPc || pendingIceCandidates.length === 0) {
-        return;
-    }
-
-    console.log(`Processing ${pendingIceCandidates.length} queued ICE candidates`);
-    
-    for (const candidate of pendingIceCandidates) {
-        try {
-            await browserPc.addIceCandidate(new RTCIceCandidate(candidate));
-            console.log("Successfully added queued ICE candidate");
-        } catch (err) {
-            console.error("Failed to add queued ICE candidate:", err);
-        }
-    }
-    
-    // Clear the queue
-    pendingIceCandidates = [];
-}
 
 /**
  * Webhook verification endpoint for WhatsApp Business API
@@ -201,72 +129,23 @@ io.on("connection", (socket) => {
 
     // SDP offer from browser
     socket.on("browser-offer", async (sdp) => {
-        console.log("=== RECEIVED SDP OFFER FROM BROWSER ===");
-        console.log("SDP Length:", sdp.length, "characters");
-        console.log("Outgoing call state:", {
-            isOutgoingCall,
-            status: outgoingCallState.status,
-            phoneNumber: outgoingCallState.phoneNumber
-        });
-        
+        console.log("Received SDP offer from browser.");
         browserOfferSdp = sdp;
         browserSocket = socket;
-        
-        // Check if this is for an outgoing call
-        if (isOutgoingCall && outgoingCallState.status === 'waiting-for-sdp') {
-            console.log("Processing SDP offer for outgoing call to:", outgoingCallState.phoneNumber);
-            
-            // Now call the WhatsApp API to initiate the call with the SDP offer
-            const callResult = await initiateWhatsAppCall(outgoingCallState.phoneNumber, sdp);
-            
-            if (callResult.success) {
-                // Store the outgoing call info
-                currentCallId = callResult.callId;
-                outgoingCallState.callId = callResult.callId;
-                outgoingCallState.status = 'ringing';
-                
-                console.log("✅ Outgoing call initiated successfully. Waiting for WhatsApp to answer...");
-                
-                // Notify the browser about the initiated call
-                io.emit("outgoing-call-initiated", { 
-                    callId: callResult.callId, 
-                    phoneNumber: outgoingCallState.phoneNumber, 
-                    callerName: outgoingCallState.callerName 
-                });
-            } else {
-                console.error("❌ Failed to initiate WhatsApp call:", callResult.error);
-                resetOutgoingCallState();
-                io.emit("webrtc-error", { error: callResult.error });
-            }
-        } else {
-            // This is for an incoming call
-            console.log("Processing SDP offer for incoming call");
-            await initiateWebRTCBridge();
-        }
-    });    // ICE candidate from browser
+        await initiateWebRTCBridge();
+    });
+
+    // ICE candidate from browser
     socket.on("browser-candidate", async (candidate) => {
         if (!browserPc) {
-            console.log("Queueing ICE candidate - browser peer connection not ready yet");
-            pendingIceCandidates.push(candidate);
-            return;
-        }
-
-        // Check if the peer connection is in a valid state
-        if (browserPc.signalingState === 'closed') {
-            console.warn("Cannot add ICE candidate: browser peer connection is closed.");
+            console.warn("Cannot add ICE candidate: browser peer connection not initialized.");
             return;
         }
 
         try {
             await browserPc.addIceCandidate(new RTCIceCandidate(candidate));
-            console.log("Successfully added ICE candidate from browser");
         } catch (err) {
             console.error("Failed to add ICE candidate from browser:", err);
-            console.error("Peer connection state:", {
-                signalingState: browserPc?.signalingState,
-                connectionState: browserPc?.connectionState,
-                iceConnectionState: browserPc?.iceConnectionState
-            });
         }
     });
 
@@ -280,30 +159,6 @@ io.on("connection", (socket) => {
     socket.on("terminate-call", async (callId) => {
         const result = await terminateCall(callId);
         console.log("Terminate call response:", result);
-    });
-
-    // Outgoing call management events
-    socket.on("reject-outbound-call", async () => {
-        console.log("Browser rejected outbound call");
-        if (outgoingCallState.callId) {
-            const result = await rejectCall(outgoingCallState.callId);
-            console.log("Reject outbound call response:", result);
-        }
-        resetOutgoingCallState();
-        io.emit("outgoing-call-rejected", { 
-            callId: outgoingCallState.callId, 
-            phoneNumber: outgoingCallState.phoneNumber 
-        });
-    });
-
-    socket.on("terminate-outbound-call", async () => {
-        console.log("Browser terminated outbound call");
-        if (outgoingCallState.callId) {
-            const result = await terminateCall(outgoingCallState.callId);
-            console.log("Terminate outbound call response:", result);
-        }
-        resetOutgoingCallState();
-        io.emit("call-ended");
     });
 });
 
@@ -328,87 +183,21 @@ app.post("/webhook", async (req, res) => {
         currentCallId = callId;
 
         if (call.event === "connect") {
+            whatsappOfferSdp = call?.session?.sdp;
             const callerName = contact?.profile?.name || "Unknown";
             const callerNumber = contact?.wa_id || "Unknown";
 
-            // Check if this is a response to our outgoing call or an incoming call
-            if (isOutgoingCall && outgoingCallState.callId === callId) {
-                console.log(`Outgoing WhatsApp call answered by ${callerNumber}`);
-                console.log("Processing outgoing call SDP answer from WhatsApp");
-                
-                // For outgoing calls, WhatsApp sends back an SDP answer, not an offer
-                const whatsappAnswerSdp = call?.session?.sdp;
-                if (whatsappAnswerSdp) {
-                    try {
-                        await initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp);
-                    } catch (error) {
-                        console.error("❌ Error in outgoing call WebRTC bridge:", error.message);
-                        io.emit("webrtc-error", { 
-                            error: `WebRTC Bridge Error: ${error.message}` 
-                        });
-                        resetOutgoingCallState();
-                    }
-                } else {
-                    console.error("No SDP answer received from WhatsApp for outgoing call");
-                    io.emit("webrtc-error", { 
-                        error: "No SDP answer received from WhatsApp" 
-                    });
-                    resetOutgoingCallState();
-                }
-                
-                outgoingCallState.status = 'connected';
-                io.emit("outgoing-call-connected", { 
-                    callId, 
-                    phoneNumber: callerNumber,
-                    callerName 
-                });
-            } else {
-                console.log(`Incoming WhatsApp call from ${callerName} (${callerNumber})`);
-                whatsappOfferSdp = call?.session?.sdp;
-                io.emit("call-is-coming", { callId, callerName, callerNumber });
-                
-                try {
-                    await initiateWebRTCBridge();
-                } catch (error) {
-                    console.error("❌ Error in incoming call WebRTC bridge:", error.message);
-                    io.emit("webrtc-error", { 
-                        error: `WebRTC Bridge Error: ${error.message}` 
-                    });
-                }
-            }
+            console.log(`Incoming WhatsApp call from ${callerName} (${callerNumber})`);
+            io.emit("call-is-coming", { callId, callerName, callerNumber });
+
+            await initiateWebRTCBridge();
 
         } else if (call.event === "terminate") {
             console.log(`WhatsApp call terminated. Call ID: ${callId}`);
-            
-            // Check if this was an outgoing call
-            if (isOutgoingCall && outgoingCallState.callId === callId) {
-                resetOutgoingCallState();
-            }
-            
             io.emit("call-ended");
 
             if (call.duration && call.status) {
                 console.log(`Call duration: ${call.duration}s | Status: ${call.status}`);
-            }
-
-        } else if (call.event === "reject") {
-            console.log(`WhatsApp call rejected. Call ID: ${callId}`);
-            
-            // Check if this was an outgoing call that got rejected
-            if (isOutgoingCall && outgoingCallState.callId === callId) {
-                const phoneNumber = outgoingCallState.phoneNumber;
-                resetOutgoingCallState();
-                io.emit("outgoing-call-rejected", { callId, phoneNumber });
-            }
-
-        } else if (call.event === "timeout") {
-            console.log(`WhatsApp call timed out. Call ID: ${callId}`);
-            
-            // Check if this was an outgoing call that timed out
-            if (isOutgoingCall && outgoingCallState.callId === callId) {
-                const phoneNumber = outgoingCallState.phoneNumber;
-                resetOutgoingCallState();
-                io.emit("outgoing-call-timeout", { callId, phoneNumber });
             }
 
         } else {
@@ -419,47 +208,6 @@ app.post("/webhook", async (req, res) => {
     } catch (err) {
         console.error("Error processing /webhook POST:", err);
         res.sendStatus(500);
-    }
-});
-
-/**
- * Initiates an outgoing WhatsApp call
- */
-app.post("/initiate-call", async (req, res) => {
-    try {
-        const { phoneNumber, callerName } = req.body;
-        
-        console.log("Received outgoing call request:", { phoneNumber, callerName });
-        
-        if (!phoneNumber) {
-            return res.status(400).json({ success: false, error: "Phone number is required" });
-        }
-
-        // Set outgoing call state
-        isOutgoingCall = true;
-        outgoingCallState = {
-            phoneNumber: phoneNumber,
-            callerName: callerName || "Outgoing Call",
-            callId: null, // Will be set when we get the response
-            status: 'waiting-for-sdp'
-        };
-
-        // Notify the browser to start generating SDP offer for outgoing call
-        io.emit("start-outgoing-call-webrtc", { 
-            phoneNumber, 
-            callerName: callerName || "Outgoing Call" 
-        });
-
-        res.json({ 
-            success: true, 
-            message: `Initiating call to ${phoneNumber}. Waiting for WebRTC setup...` 
-        });
-    } catch (error) {
-        console.error("Error initiating outgoing call:", error);
-        res.status(500).json({ 
-            success: false, 
-            error: "Internal server error while initiating call" 
-        });
     }
 });
 
@@ -489,9 +237,6 @@ async function initiateWebRTCBridge() {
         sdp: browserOfferSdp
     }));
     console.log("Browser offer SDP set as remote description.");
-    
-    // Process any queued ICE candidates now that the peer connection is ready
-    await processPendingIceCandidates();
 
     // --- Setup WhatsApp peer connection ---
     whatsappPc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -528,36 +273,21 @@ async function initiateWebRTCBridge() {
 
     // --- Create SDP answers for both peers ---
     const browserAnswer = await browserPc.createAnswer();
-    
-    // Fix setup attributes in browser answer
-    const fixedBrowserAnswerSdp = fixSdpSetupAttributes(browserAnswer.sdp, false);
-    const fixedBrowserAnswer = new RTCSessionDescription({
-        type: "answer",
-        sdp: fixedBrowserAnswerSdp
-    });
-    
-    await browserPc.setLocalDescription(fixedBrowserAnswer);
-    browserSocket.emit("browser-answer", fixedBrowserAnswerSdp);
-    console.log("Browser answer SDP created, fixed, and sent.");
+    await browserPc.setLocalDescription(browserAnswer);
+    browserSocket.emit("browser-answer", browserAnswer.sdp);
+    console.log("Browser answer SDP created and sent.");
 
     const waAnswer = await whatsappPc.createAnswer();
-    
-    // Fix setup attributes in WhatsApp answer
-    const fixedWaSdp = fixSdpSetupAttributes(waAnswer.sdp, false);
-    const fixedWaAnswer = new RTCSessionDescription({
-        type: "answer",
-        sdp: fixedWaSdp
-    });
-    
-    await whatsappPc.setLocalDescription(fixedWaAnswer);
-    console.log("WhatsApp answer SDP prepared and fixed.");
+    await whatsappPc.setLocalDescription(waAnswer);
+    const finalWaSdp = waAnswer.sdp.replace("a=setup:actpass", "a=setup:active");
+    console.log("WhatsApp answer SDP prepared.");
 
     // Send pre-accept, and only proceed with accept if successful
-    const preAcceptSuccess = await answerCallToWhatsApp(currentCallId, fixedWaSdp, "pre_accept");
+    const preAcceptSuccess = await answerCallToWhatsApp(currentCallId, finalWaSdp, "pre_accept");
 
     if (preAcceptSuccess) {
         setTimeout(async () => {
-            const acceptSuccess = await answerCallToWhatsApp(currentCallId, fixedWaSdp, "accept");
+            const acceptSuccess = await answerCallToWhatsApp(currentCallId, finalWaSdp, "accept");
             if (acceptSuccess && browserSocket) {
                 browserSocket.emit("start-browser-timer");
             }
@@ -569,227 +299,6 @@ async function initiateWebRTCBridge() {
     // Reset session state
     browserOfferSdp = null;
     whatsappOfferSdp = null;
-    pendingIceCandidates = [];
-}
-
-/**
- * Initiates WebRTC bridge for outgoing calls where WhatsApp provides an SDP answer
- */
-async function initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp) {
-    if (!browserOfferSdp || !whatsappAnswerSdp || !browserSocket) {
-        console.error("Missing required data for outgoing call WebRTC bridge:", {
-            hasBrowserOffer: !!browserOfferSdp,
-            hasWhatsappAnswer: !!whatsappAnswerSdp,
-            hasBrowserSocket: !!browserSocket
-        });
-        return;
-    }
-
-    console.log("=== INITIATING OUTGOING CALL WEBRTC BRIDGE ===");
-    
-    // --- Setup browser peer connection ---
-    browserPc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    browserStream = new MediaStream();
-
-    browserPc.ontrack = (event) => {
-        console.log("Audio track received from browser for outgoing call.");
-        event.streams[0].getTracks().forEach((track) => browserStream.addTrack(track));
-    };
-
-    browserPc.onicecandidate = (event) => {
-        if (event.candidate) {
-            browserSocket.emit("browser-candidate", event.candidate);
-        }
-    };
-
-    // For outgoing calls, browser SDP is the offer
-    try {
-        // Validate browser SDP before setting
-        if (!browserOfferSdp || typeof browserOfferSdp !== 'string') {
-            throw new Error("Invalid browser SDP offer - SDP is empty or not a string");
-        }
-        
-        if (!browserOfferSdp.includes('v=0')) {
-            throw new Error("Invalid browser SDP offer - Missing version line");
-        }
-        
-        await browserPc.setRemoteDescription(new RTCSessionDescription({
-            type: "offer",
-            sdp: browserOfferSdp
-        }));
-        console.log("Browser offer SDP set as remote description for outgoing call.");
-    } catch (error) {
-        console.error("❌ Failed to set browser SDP offer:", error.message);
-        console.error("Browser SDP preview:", browserOfferSdp?.substring(0, 200));
-        throw error;
-    }
-    
-    // Process any queued ICE candidates
-    await processPendingIceCandidates();
-
-    // --- Setup WhatsApp peer connection for outgoing call ---
-    whatsappPc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
-    // For outgoing calls, we already have the WhatsApp answer, so we don't need to wait
-    console.log("Setting WhatsApp SDP answer for outgoing call");
-    
-    whatsappPc.ontrack = (event) => {
-        console.log("Audio track received from WhatsApp for outgoing call.");
-        whatsappStream = event.streams[0];
-        
-        // Forward WhatsApp audio to browser immediately
-        whatsappStream?.getAudioTracks().forEach((track) => {
-            browserPc.addTrack(track, whatsappStream);
-            console.log("Forwarded WhatsApp audio track to browser");
-        });
-    };
-
-    // For outgoing calls: WhatsApp peer connection receives our offer and gives back answer
-    // Set our browser offer as remote description for WhatsApp peer connection
-    try {
-        await whatsappPc.setRemoteDescription(new RTCSessionDescription({
-            type: "offer", 
-            sdp: browserOfferSdp
-        }));
-        console.log("Browser offer set as remote description for WhatsApp peer connection");
-    } catch (error) {
-        console.error("❌ Failed to set browser offer as remote description:", error.message);
-        throw error;
-    }
-
-    // Set WhatsApp answer as local description for WhatsApp peer connection
-    try {
-        // Validate WhatsApp SDP before setting
-        if (!whatsappAnswerSdp || typeof whatsappAnswerSdp !== 'string') {
-            throw new Error("Invalid WhatsApp SDP answer - SDP is empty or not a string");
-        }
-        
-        if (!whatsappAnswerSdp.includes('v=0')) {
-            throw new Error("Invalid WhatsApp SDP answer - Missing version line");
-        }
-        
-        await whatsappPc.setLocalDescription(new RTCSessionDescription({
-            type: "answer",
-            sdp: whatsappAnswerSdp
-        }));
-        console.log("WhatsApp answer SDP set as local description.");
-    } catch (error) {
-        console.error("❌ Failed to set WhatsApp SDP answer:", error.message);
-        console.error("WhatsApp SDP preview:", whatsappAnswerSdp?.substring(0, 200));
-        throw error;
-    }
-
-    // Forward browser mic to WhatsApp
-    browserStream?.getAudioTracks().forEach((track) => {
-        whatsappPc.addTrack(track, browserStream);
-        console.log("Forwarded browser audio track to WhatsApp");
-    });
-
-    // Create answer for browser
-    const browserAnswer = await browserPc.createAnswer();
-    
-    // Fix setup attributes in the browser answer SDP
-    const fixedBrowserAnswerSdp = fixSdpSetupAttributes(browserAnswer.sdp, false);
-    const fixedBrowserAnswer = new RTCSessionDescription({
-        type: "answer",
-        sdp: fixedBrowserAnswerSdp
-    });
-    
-    await browserPc.setLocalDescription(fixedBrowserAnswer);
-    browserSocket.emit("browser-answer", fixedBrowserAnswerSdp);
-    console.log("Browser answer SDP created, fixed, and sent for outgoing call.");
-
-    // Start the call timer
-    if (browserSocket) {
-        browserSocket.emit("start-browser-timer");
-    }
-
-    console.log("=== OUTGOING CALL WEBRTC BRIDGE COMPLETE ===");
-    
-    // Reset session state
-    browserOfferSdp = null;
-    pendingIceCandidates = [];
-}
-
-/**
- * Initiates an outgoing call to WhatsApp API with SDP offer
- */
-async function initiateWhatsAppCall(phoneNumber, sdp) {
-    // Validate inputs
-    if (!phoneNumber || !sdp) {
-        return {
-            success: false,
-            error: `Missing required parameters: ${!phoneNumber ? 'phoneNumber' : ''} ${!sdp ? 'sdp' : ''}`.trim()
-        };
-    }
-
-    // Validate SDP format
-    if (typeof sdp !== 'string' || sdp.length < 50 || !sdp.includes('v=0')) {
-        return {
-            success: false,
-            error: "Invalid SDP format - SDP must be a valid session description"
-        };
-    }
-
-    const body = {
-        messaging_product: "whatsapp",
-        to: phoneNumber,
-        action: "connect",
-        session: { 
-            sdp_type: "offer", 
-            sdp 
-        }
-    };
-
-    try {
-        console.log("Sending outgoing call request to WhatsApp API:", {
-            to: phoneNumber,
-            action: "connect",
-            sdp_length: sdp.length,
-            sdp_preview: sdp.substring(0, 100) + "..."
-        });
-
-        const response = await axios.post(WHATSAPP_API_URL, body, {
-            headers: {
-                Authorization: ACCESS_TOKEN,
-                "Content-Type": "application/json",
-            },
-        });
-
-        console.log("WhatsApp API response:", response.data);
-
-        if (response.data?.success === true) {
-            console.log(`Successfully initiated call to ${phoneNumber}`);
-            
-            // The response might contain a call_id that we should track
-            const callId = response.data.call_id || `outgoing_${Date.now()}`;
-            
-            return {
-                success: true,
-                callId: callId,
-                data: response.data
-            };
-        } else {
-            console.warn("WhatsApp call initiation response was not successful:", response.data);
-            return {
-                success: false,
-                error: "WhatsApp API did not confirm call initiation"
-            };
-        }
-    } catch (error) {
-        console.error("Failed to initiate WhatsApp call:", error.message);
-        
-        let errorMessage = "Failed to connect to WhatsApp API";
-        if (error.response?.data) {
-            console.error("WhatsApp API error response:", error.response.data);
-            errorMessage = error.response.data.error?.message || errorMessage;
-        }
-        
-        return {
-            success: false,
-            error: errorMessage
-        };
-    }
 }
 
 /**
