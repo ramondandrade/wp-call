@@ -116,6 +116,29 @@ function resetOutgoingCallState() {
 }
 
 /**
+ * Fix SDP setup attributes to prevent DTLS negotiation errors
+ */
+function fixSdpSetupAttributes(sdp, isOffer = false) {
+    if (!sdp || typeof sdp !== 'string') {
+        return sdp;
+    }
+
+    // For offers, use "actpass" (active or passive)
+    // For answers, use "active" 
+    const setupValue = isOffer ? "actpass" : "active";
+    
+    // Replace any existing setup attribute
+    let fixedSdp = sdp.replace(/a=setup:(active|passive|actpass|holdconn)/g, `a=setup:${setupValue}`);
+    
+    // If no setup attribute exists, add one after the connection line
+    if (!fixedSdp.includes('a=setup:')) {
+        fixedSdp = fixedSdp.replace(/(a=mid:\d+)/g, `$1\r\na=setup:${setupValue}`);
+    }
+    
+    return fixedSdp;
+}
+
+/**
  * Process any queued ICE candidates once the browser peer connection is ready
  */
 async function processPendingIceCandidates() {
@@ -505,21 +528,36 @@ async function initiateWebRTCBridge() {
 
     // --- Create SDP answers for both peers ---
     const browserAnswer = await browserPc.createAnswer();
-    await browserPc.setLocalDescription(browserAnswer);
-    browserSocket.emit("browser-answer", browserAnswer.sdp);
-    console.log("Browser answer SDP created and sent.");
+    
+    // Fix setup attributes in browser answer
+    const fixedBrowserAnswerSdp = fixSdpSetupAttributes(browserAnswer.sdp, false);
+    const fixedBrowserAnswer = new RTCSessionDescription({
+        type: "answer",
+        sdp: fixedBrowserAnswerSdp
+    });
+    
+    await browserPc.setLocalDescription(fixedBrowserAnswer);
+    browserSocket.emit("browser-answer", fixedBrowserAnswerSdp);
+    console.log("Browser answer SDP created, fixed, and sent.");
 
     const waAnswer = await whatsappPc.createAnswer();
-    await whatsappPc.setLocalDescription(waAnswer);
-    const finalWaSdp = waAnswer.sdp.replace("a=setup:actpass", "a=setup:active");
-    console.log("WhatsApp answer SDP prepared.");
+    
+    // Fix setup attributes in WhatsApp answer
+    const fixedWaSdp = fixSdpSetupAttributes(waAnswer.sdp, false);
+    const fixedWaAnswer = new RTCSessionDescription({
+        type: "answer",
+        sdp: fixedWaSdp
+    });
+    
+    await whatsappPc.setLocalDescription(fixedWaAnswer);
+    console.log("WhatsApp answer SDP prepared and fixed.");
 
     // Send pre-accept, and only proceed with accept if successful
-    const preAcceptSuccess = await answerCallToWhatsApp(currentCallId, finalWaSdp, "pre_accept");
+    const preAcceptSuccess = await answerCallToWhatsApp(currentCallId, fixedWaSdp, "pre_accept");
 
     if (preAcceptSuccess) {
         setTimeout(async () => {
-            const acceptSuccess = await answerCallToWhatsApp(currentCallId, finalWaSdp, "accept");
+            const acceptSuccess = await answerCallToWhatsApp(currentCallId, fixedWaSdp, "accept");
             if (acceptSuccess && browserSocket) {
                 browserSocket.emit("start-browser-timer");
             }
@@ -606,14 +644,20 @@ async function initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp) {
         });
     };
 
-    // Set the browser offer as local description for WhatsApp peer connection
-    await whatsappPc.setLocalDescription(new RTCSessionDescription({
-        type: "offer", 
-        sdp: browserOfferSdp
-    }));
-    console.log("Browser offer set as local description for WhatsApp peer connection");
+    // For outgoing calls: WhatsApp peer connection receives our offer and gives back answer
+    // Set our browser offer as remote description for WhatsApp peer connection
+    try {
+        await whatsappPc.setRemoteDescription(new RTCSessionDescription({
+            type: "offer", 
+            sdp: browserOfferSdp
+        }));
+        console.log("Browser offer set as remote description for WhatsApp peer connection");
+    } catch (error) {
+        console.error("❌ Failed to set browser offer as remote description:", error.message);
+        throw error;
+    }
 
-    // Set WhatsApp answer as remote description
+    // Set WhatsApp answer as local description for WhatsApp peer connection
     try {
         // Validate WhatsApp SDP before setting
         if (!whatsappAnswerSdp || typeof whatsappAnswerSdp !== 'string') {
@@ -624,11 +668,11 @@ async function initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp) {
             throw new Error("Invalid WhatsApp SDP answer - Missing version line");
         }
         
-        await whatsappPc.setRemoteDescription(new RTCSessionDescription({
+        await whatsappPc.setLocalDescription(new RTCSessionDescription({
             type: "answer",
             sdp: whatsappAnswerSdp
         }));
-        console.log("WhatsApp answer SDP set as remote description.");
+        console.log("WhatsApp answer SDP set as local description.");
     } catch (error) {
         console.error("❌ Failed to set WhatsApp SDP answer:", error.message);
         console.error("WhatsApp SDP preview:", whatsappAnswerSdp?.substring(0, 200));
@@ -643,9 +687,17 @@ async function initiateOutgoingCallWebRTCBridge(whatsappAnswerSdp) {
 
     // Create answer for browser
     const browserAnswer = await browserPc.createAnswer();
-    await browserPc.setLocalDescription(browserAnswer);
-    browserSocket.emit("browser-answer", browserAnswer.sdp);
-    console.log("Browser answer SDP created and sent for outgoing call.");
+    
+    // Fix setup attributes in the browser answer SDP
+    const fixedBrowserAnswerSdp = fixSdpSetupAttributes(browserAnswer.sdp, false);
+    const fixedBrowserAnswer = new RTCSessionDescription({
+        type: "answer",
+        sdp: fixedBrowserAnswerSdp
+    });
+    
+    await browserPc.setLocalDescription(fixedBrowserAnswer);
+    browserSocket.emit("browser-answer", fixedBrowserAnswerSdp);
+    console.log("Browser answer SDP created, fixed, and sent for outgoing call.");
 
     // Start the call timer
     if (browserSocket) {
